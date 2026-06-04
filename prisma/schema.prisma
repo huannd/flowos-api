@@ -1,0 +1,231 @@
+// prisma/schema.prisma — FlowOS
+// Database: flowos_db — Workflow Automation SaaS Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════
+// 1. USERS & AUTH
+// ═══════════════════════════════════
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  fullName     String?
+  avatar       String?
+  systemRole   SystemRole @default(USER)
+  isActive     Boolean    @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  credentials   UserCredential[]
+  executions    Execution[]
+  subscription  Subscription?
+  usageLogs     UsageLog[]
+
+  @@index([email])
+  @@index([systemRole])
+}
+
+enum SystemRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+// ═══════════════════════════════════
+// 2. TEMPLATE MARKETPLACE
+// ═══════════════════════════════════
+
+model Category {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  slug      String     @unique
+  icon      String?
+  sortOrder Int        @default(0)
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  templates Template[]
+}
+
+model Template {
+  id              String   @id @default(uuid())
+  name            String
+  description     String?
+  longDescription String?
+  icon            String?
+  coverImage      String?
+  categoryId      String
+  n8nWorkflowId   String   @unique
+  webhookPath     String?
+  inputSchema     Json     // JSON Schema for dynamic form
+  outputSchema    Json?
+  tags            String[] @default([])
+  isPremium       Boolean  @default(false)
+  isPublic        Boolean  @default(true)
+  usageCount      Int      @default(0)
+  averageRunTime  Int?     // ms
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  category   Category    @relation(fields: [categoryId], references: [id])
+  executions Execution[]
+
+  @@index([categoryId, isPublic])
+  @@index([isPublic, sortOrder])
+}
+
+// ═══════════════════════════════════
+// 3. EXECUTION TRACKING
+// ═══════════════════════════════════
+
+model Execution {
+  id             String          @id @default(uuid())
+  userId         String
+  templateId     String
+  n8nExecutionId String?         @unique
+  status         ExecutionStatus @default(PENDING)
+  inputData      Json
+  outputData     Json?
+  errorMessage   String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  duration       Int?            // ms
+  retryOf        String?
+  metadata       Json?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template Template @relation(fields: [templateId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([templateId, status])
+  @@index([status, createdAt])
+  @@index([n8nExecutionId])
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  ERROR
+  CANCELED
+  TIMEOUT
+}
+
+// ═══════════════════════════════════
+// 4. USER CREDENTIALS (Encrypted)
+// ═══════════════════════════════════
+
+model UserCredential {
+  id            String   @id @default(uuid())
+  userId        String
+  name          String
+  type          String   // "telegram", "openai", "shopee"
+  encryptedData String   // AES-256-GCM
+  iv            String
+  authTag       String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, name])
+  @@index([userId, type])
+}
+
+// ═══════════════════════════════════
+// 5. BILLING & SUBSCRIPTION
+// ═══════════════════════════════════
+
+model Plan {
+  id             String       @id @default(uuid())
+  name           String
+  description    String?
+  price          Float        @default(0)
+  currency       String       @default("VND")
+  interval       PlanInterval @default(MONTH)
+  executionLimit Int          @default(100)
+  templateAccess String[]     @default([]) // category slugs, empty = all
+  features       Json         @default("[]")
+  isPublic       Boolean      @default(true)
+  sortOrder      Int          @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  subscriptions Subscription[]
+}
+
+enum PlanInterval {
+  MONTH
+  QUARTER
+  YEAR
+  LIFETIME
+}
+
+model Subscription {
+  id        String             @id @default(uuid())
+  userId    String             @unique
+  planId    String
+  status    SubscriptionStatus @default(ACTIVE)
+  startDate DateTime           @default(now())
+  endDate   DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  EXPIRED
+}
+
+model UsageLog {
+  id        String   @id @default(uuid())
+  userId    String
+  month     String   // "2026-06"
+  execCount Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, month])
+}
+
+// ═══════════════════════════════════
+// 6. ADMIN & AUDIT
+// ═══════════════════════════════════
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  adminId   String
+  action    String
+  target    String
+  details   Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([adminId, createdAt(sort: Desc)])
+}
+
+model SystemConfig {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
